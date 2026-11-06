@@ -33,9 +33,9 @@ function doPost(e) {
 function pinError() { const e = new Error('Wrong code'); e.code = 'PIN'; return e; }
 
 function route(p) {
-  const pin = String(p.pin || '');
-  const isView = pin === VIEW_PIN;
-  if (!isView && pin !== FORM_PIN) throw pinError();
+  const pin = String(p.pin || '').trim().toLowerCase();
+  const isView = pin === VIEW_PIN.toLowerCase();
+  if (!isView && pin !== FORM_PIN.toLowerCase()) throw pinError();
   switch (p.action) {
     case 'ping':   return { role: isView ? 'view' : 'form' };
     case 'save':   return { entry: saveEntry(p.entry) };

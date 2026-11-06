@@ -52,7 +52,7 @@ The Log page is at `https://jguguy.github.io/dad-care-log/view.html` and asks fo
 ## Changing things later
 - **Add a caregiver, or change their days**: edit the `caregivers` list in `config.js`.
 - **Add or remove a task**: edit `sections` in `config.js`. The sheet adds a new column by itself. Don't rename an existing `col` once you have data, or the old and new answers will end up in two separate columns.
-- **Change the codes**: edit them in Apps Script, then **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. You have to redeploy after **any** change to the script. Everyone will be asked for the new code once.
+- **Change the codes** (currently the same code for the form and the log; capital letters don't matter): edit them in Apps Script, then **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. You have to redeploy after **any** change to the script. Everyone will be asked for the new code once.
 
 ## Notes
 - Until `scriptUrl` is filled in, the site runs in **demo mode**: entries stay on that one device, so you can try it safely.
