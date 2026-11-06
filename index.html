@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Dad Care">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="manifest" href="manifest.json">
+<title>Daily Care Checklist</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="nav"><h1 id="title">Daily Care</h1><a href="view.html">View log</a></div>
+  <p class="sub" id="dateLong"></p>
+  <div id="demo" class="banner hidden">Demo mode: entries are saved on this phone only. Follow the README to connect Google Sheets.</div>
+
+  <!-- PIN, shown once per phone -->
+  <div id="pinCard" class="card hidden">
+    <span class="label">Enter the family code</span>
+    <p class="sub">You only need to do this once on this phone.</p>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="Code">
+    <div style="height:12px"></div>
+    <button class="btn" id="pinBtn">Continue</button>
+    <div id="pinErr" class="err-text hidden"></div>
+  </div>
+
+  <div id="form" class="hidden">
+    <div class="card">
+      <span class="label">Who is filling this in?</span>
+      <div class="chips" id="who"></div>
+      <input id="otherName" type="text" class="hidden" placeholder="Your name" autocomplete="name" style="margin-top:10px">
+      <div style="height:14px"></div>
+      <span class="label">Date</span>
+      <input id="date" type="date">
+    </div>
+
+    <div id="sections"></div>
+
+    <div class="card">
+      <span class="label">How was his day?</span>
+      <div class="chips" id="mood"></div>
+      <div style="height:14px"></div>
+      <span class="label">Notes for the family</span>
+      <textarea id="notes" placeholder="Anything unusual: mood, eating, falls, confusion, supplies needed…"></textarea>
+    </div>
+  </div>
+</div>
+
+<div class="savebar hidden" id="savebar">
+  <div class="inner">
+    <div class="msg" id="msg">Not saved yet</div>
+    <button class="btn" id="saveBtn">Save</button>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const S = { date: todayStr(), caregiver: null, other: false, values: {}, recent: [], dirty: false, saving: false };
+const TASKS = allTasks();
+$("title").textContent = CFG.title;
+document.title = CFG.title;
+if (Api.demo) $("demo").classList.remove("hidden");
+
+// ---------- PIN ----------
+function pin() { return store.get("care-pin") || ""; }
+async function start() {
+  if (!Api.demo && !pin()) { $("pinCard").classList.remove("hidden"); $("pin").focus(); return; }
+  $("pinCard").classList.add("hidden");
+  $("form").classList.remove("hidden");
+  $("savebar").classList.remove("hidden");
+  pickDefaultCaregiver();
+  renderWho(); renderMood(); renderSections();
+  await load();
+}
+$("pinBtn").onclick = async () => {
+  const p = $("pin").value.trim();
+  if (!p) return;
+  $("pinBtn").disabled = true; $("pinErr").classList.add("hidden");
+  try { await Api.call("ping", { pin: p }); store.set("care-pin", p); start(); }
+  catch (e) { $("pinErr").textContent = e.code === "PIN" ? "That code is not right. Please try again." : "Could not connect: " + e.message; $("pinErr").classList.remove("hidden"); }
+  $("pinBtn").disabled = false;
+};
+$("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pinBtn").click(); });
+
+// ---------- caregiver & date ----------
+function pickDefaultCaregiver() {
+  const exp = expectedCaregiver(S.date);
+  const last = store.get("care-last-caregiver");
+  S.caregiver = exp || last || CFG.caregivers[0].name;
+  S.other = !CFG.caregivers.some((c) => sameName(c.name, S.caregiver));
+  if (S.other) $("otherName").value = S.caregiver;
+}
+function renderWho() {
+  const box = $("who"); box.innerHTML = "";
+  CFG.caregivers.forEach((c) => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button";
+    b.setAttribute("aria-pressed", !S.other && sameName(c.name, S.caregiver));
+    b.innerHTML = esc(c.name) + ' <small>' + esc(c.days.join("/")) + "</small>";
+    b.onclick = () => changeWho(c.name, false);
+    box.appendChild(b);
+  });
+  const o = document.createElement("button");
+  o.className = "chip"; o.type = "button"; o.textContent = "Someone else";
+  o.setAttribute("aria-pressed", S.other);
+  o.onclick = () => changeWho($("otherName").value.trim() || store.get("care-other-name") || "", true);
+  box.appendChild(o);
+  $("otherName").classList.toggle("hidden", !S.other);
+  $("dateLong").textContent = fmtDate(S.date, true);
+  $("date").value = S.date;
+}
+function confirmDiscard() { return !S.dirty || confirm("You have unsaved changes. Leave them?"); }
+function changeWho(name, other) {
+  if (!confirmDiscard()) return;
+  S.caregiver = name; S.other = other; S.dirty = false;
+  renderWho();
+  if (other) { $("otherName").value = name; if (!name) { $("otherName").focus(); S.values = {}; renderSections(); setMsg("Type your name above"); return; } }
+  load();
+}
+$("otherName").addEventListener("change", () => {
+  const n = $("otherName").value.trim(); if (!n) return;
+  S.caregiver = n; store.set("care-other-name", n); load();
+});
+$("date").addEventListener("change", () => {
+  const d = $("date").value;
+  if (!d || d === S.date) return;
+  if (!confirmDiscard()) { $("date").value = S.date; return; }
+  S.date = d; S.dirty = false; renderWho(); load();
+});
+
+// ---------- load existing data ----------
+async function load() {
+  if (!S.caregiver) return;
+  setMsg("Loading…");
+  try {
+    const res = await Api.call("status", { pin: pin(), since: addDays(S.date, -35) });
+    S.recent = res.entries || [];
+    const mine = S.recent.find((e) => e.date === S.date && sameName(e.caregiver, S.caregiver));
+    S.values = mine ? { ...mine.values } : {};
+    S.dirty = false;
+    renderSections(); renderMood();
+    $("notes").value = S.values[CFG.notesCol] || "";
+    setMsg(mine ? "Saved earlier (" + mine.savedAt.slice(11) + ") — you can update it" : "Not saved yet", mine ? "ok" : "");
+  } catch (e) { handleErr(e); }
+}
+function handleErr(e) {
+  if (e.code === "PIN") { store.del("care-pin"); location.reload(); return; }
+  setMsg("No connection. Check internet and try again.", "err");
+}
+
+// ---------- checklist ----------
+function renderSections() {
+  const box = $("sections"); box.innerHTML = "";
+  CFG.sections.forEach((sec) => {
+    const card = document.createElement("div"); card.className = "card";
+    const head = document.createElement("div"); head.className = "card-head";
+    head.innerHTML = "<h2>" + esc(sec.title) + "</h2>";
+    if (sec.freq === "daily") { const c = document.createElement("span"); c.className = "count"; c.id = "count-" + sec.freq; head.appendChild(c); }
+    card.appendChild(head);
+    sec.tasks.forEach((t0) => { const t = { ...t0, freq: sec.freq, everyDays: sec.everyDays }; card.appendChild(renderTask(t)); });
+    box.appendChild(card);
+  });
+  updateCount();
+}
+function statusHtml(t) {
+  // include what is ticked right now on this form
+  const live = S.recent.filter((e) => !(e.date === S.date && sameName(e.caregiver, S.caregiver)))
+    .concat(S.caregiver ? [{ date: S.date, caregiver: S.caregiver, values: S.values }] : []);
+  const st = taskStatus(t, live, S.date, null);
+  if (!st) return "";
+  if (st.kind === "per") {
+    return '<span class="status ' + (st.parts.every((p) => p.date) ? "ok" : "warn") + '">This week: ' +
+      st.parts.map((p) => esc(p.name) + (p.date ? " ✓" : " —")).join(" · ") + "</span>";
+  }
+  return '<span class="status ' + st.level + '">' + esc(st.text) + "</span>";
+}
+function renderTask(t) {
+  const v = S.values[t.col] ?? "";
+  const textHtml = '<div class="task-text">' + esc(t.label) + (t.hint ? '<span class="task-hint">' + esc(t.hint) + "</span>" : "") + statusHtml(t) + "</div>";
+  if (t.type === "number") {
+    const row = document.createElement("div"); row.className = "task";
+    row.innerHTML = textHtml + '<div class="num"><input type="text" inputmode="decimal" placeholder="—"><span>' + esc(t.unit || "") + "</span></div>";
+    const inp = row.querySelector("input"); inp.value = v;
+    inp.setAttribute("aria-label", t.label);
+    inp.addEventListener("input", () => { S.values[t.col] = inp.value.trim(); touch(); });
+    return row;
+  }
+  if (t.type === "yesno") {
+    const row = document.createElement("div"); row.className = "task";
+    row.innerHTML = textHtml + '<div class="yesno"></div>';
+    const yn = row.querySelector(".yesno");
+    ["Yes", "No"].forEach((opt) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = opt;
+      b.setAttribute("aria-pressed", v === opt);
+      b.onclick = () => {
+        S.values[t.col] = S.values[t.col] === opt ? "" : opt;
+        yn.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", S.values[t.col] === x.textContent));
+        touch();
+      };
+      yn.appendChild(b);
+    });
+    return row;
+  }
+  const row = document.createElement("label"); row.className = "task";
+  row.innerHTML = '<input type="checkbox">' + textHtml;
+  const cb = row.querySelector("input"); cb.checked = v === "Yes";
+  cb.addEventListener("change", () => {
+    S.values[t.col] = cb.checked ? "Yes" : "";
+    const old = row.querySelector(".status");
+    if (old) old.outerHTML = statusHtml(t);
+    touch();
+  });
+  return row;
+}
+function updateCount() {
+  const daily = TASKS.filter((t) => t.freq === "daily");
+  const el = $("count-daily");
+  if (el) el.textContent = daily.filter((t) => isDone(t, S.values[t.col])).length + " of " + daily.length + " done";
+}
+function renderMood() {
+  const box = $("mood"); box.innerHTML = "";
+  CFG.moodOptions.forEach((m) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = m;
+    b.setAttribute("aria-pressed", S.values[CFG.moodCol] === m);
+    b.onclick = () => { S.values[CFG.moodCol] = S.values[CFG.moodCol] === m ? "" : m; renderMood(); touch(); };
+    box.appendChild(b);
+  });
+}
+$("notes").addEventListener("input", () => { S.values[CFG.notesCol] = $("notes").value; touch(); });
+function touch() { S.dirty = true; updateCount(); setMsg("Not saved yet — tap Save"); }
+
+// ---------- save ----------
+function setMsg(t, cls) { $("msg").textContent = t; $("msg").className = "msg " + (cls || ""); }
+$("saveBtn").onclick = async () => {
+  if (S.saving) return;
+  if (S.other) { S.caregiver = $("otherName").value.trim(); }
+  if (!S.caregiver) { setMsg("Please type your name first", "err"); $("otherName").focus(); return; }
+  const values = {};
+  TASKS.forEach((t) => (values[t.col] = S.values[t.col] ?? ""));
+  values[CFG.moodCol] = S.values[CFG.moodCol] || "";
+  values[CFG.notesCol] = $("notes").value.trim();
+  S.saving = true; $("saveBtn").disabled = true; setMsg("Saving…");
+  try {
+    const res = await Api.call("save", { pin: pin(), entry: { date: S.date, caregiver: S.caregiver, values } });
+    S.recent = S.recent.filter((e) => !(e.date === S.date && sameName(e.caregiver, S.caregiver))).concat([res.entry]);
+    S.dirty = false;
+    store.set("care-last-caregiver", S.caregiver);
+    setMsg("Saved ✓ " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), "ok");
+  } catch (e) { handleErr(e); }
+  S.saving = false; $("saveBtn").disabled = false;
+};
+window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+start();
+</script>
+</body>
+</html>

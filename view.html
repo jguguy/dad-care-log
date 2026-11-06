@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Care Log">
+<link rel="apple-touch-icon" href="icon.png">
+<title>Care Log</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap" style="padding-bottom:40px">
+  <div class="nav"><h1>Care Log</h1><a href="index.html">Fill in form</a></div>
+  <p class="sub" id="sub">What the caregivers recorded</p>
+  <div id="demo" class="banner hidden">Demo mode: showing entries saved on this device only.</div>
+
+  <div id="pinCard" class="card hidden">
+    <span class="label">Enter the family viewer code</span>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="Viewer code">
+    <div style="height:12px"></div>
+    <button class="btn" id="pinBtn">Open log</button>
+    <div id="pinErr" class="err-text hidden"></div>
+  </div>
+
+  <div id="main" class="hidden">
+    <div class="card">
+      <div class="row">
+        <select id="range" aria-label="Date range">
+          <option value="7">Last 7 days</option>
+          <option value="14" selected>Last 14 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="all">Everything</option>
+        </select>
+        <select id="who" aria-label="Caregiver"><option value="">All caregivers</option></select>
+      </div>
+      <div id="sheetLink" class="hidden" style="margin-top:12px"><a target="_blank" rel="noopener">Open the Google Sheet ↗</a></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Weekly &amp; bi-weekly</h2><span class="count">as of today</span></div>
+      <div id="weekly"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Blood sugar</h2><span class="count" id="bsRange"></span></div>
+      <div class="stats" id="bs"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Day by day</h2><span class="count" id="dayCount"></span></div>
+      <div id="days"></div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const TASKS = allTasks();
+const BS = TASKS.find((t) => t.type === "number");
+let ENTRIES = [];
+if (Api.demo) $("demo").classList.remove("hidden");
+if (CFG.sheetUrl) { $("sheetLink").classList.remove("hidden"); $("sheetLink").querySelector("a").href = CFG.sheetUrl; }
+try { const r = store.get("care-view-range"); if (r) $("range").value = r; } catch (e) {}
+
+function vpin() { return store.get("care-view-pin") || ""; }
+async function start() {
+  if (!Api.demo && !vpin()) { $("pinCard").classList.remove("hidden"); return; }
+  try {
+    const res = await Api.call("list", { pin: vpin() });
+    ENTRIES = res.entries || [];
+  } catch (e) {
+    if (e.code === "PIN") { store.del("care-view-pin"); $("pinCard").classList.remove("hidden"); showPinErr("That code is not right."); return; }
+    $("sub").textContent = "Could not load: " + e.message; return;
+  }
+  $("pinCard").classList.add("hidden");
+  $("main").classList.remove("hidden");
+  const names = [...new Set(CFG.caregivers.map((c) => c.name).concat(ENTRIES.map((e) => e.caregiver)))];
+  $("who").innerHTML = '<option value="">All caregivers</option>' + names.map((n) => "<option>" + esc(n) + "</option>").join("");
+  render();
+}
+function showPinErr(t) { $("pinErr").textContent = t; $("pinErr").classList.remove("hidden"); }
+$("pinBtn").onclick = () => { const p = $("pin").value.trim(); if (!p) return; store.set("care-view-pin", p); $("pinErr").classList.add("hidden"); start(); };
+$("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pinBtn").click(); });
+$("range").onchange = () => { store.set("care-view-range", $("range").value); render(); };
+$("who").onchange = render;
+
+function render() {
+  const today = todayStr();
+  const range = $("range").value;
+  const who = $("who").value;
+  const from = range === "all" ? (ENTRIES.map((e) => e.date).sort()[0] || today) : addDays(today, -(Number(range) - 1));
+  const list = ENTRIES.filter((e) => e.date >= from && (!who || sameName(e.caregiver, who)));
+
+  // weekly / bi-weekly status (always across all caregivers, as of today)
+  $("weekly").innerHTML = TASKS.filter((t) => t.freq !== "daily").map((t) => {
+    const st = taskStatus(t, ENTRIES, today, null);
+    let s;
+    if (st.kind === "per") {
+      s = '<span class="status ' + (st.parts.every((p) => p.date) ? "ok" : "warn") + '">This week: ' +
+        st.parts.map((p) => esc(p.name) + (p.date ? " ✓ " + esc(fmtDate(p.date)) : " — not yet")).join(" · ") + "</span>";
+    } else s = '<span class="status ' + st.level + '">' + esc(st.text) + "</span>";
+    return '<div class="task"><div class="task-text">' + esc(t.label) + "<br>" + s + "</div></div>";
+  }).join("");
+
+  // blood sugar
+  const vals = list.map((e) => parseFloat(e.values[BS.col])).filter((n) => !isNaN(n));
+  $("bsRange").textContent = BS.unit || "";
+  const stat = (n, l) => "<div><b>" + n + "</b><span>" + l + "</span></div>";
+  $("bs").innerHTML = vals.length
+    ? stat(Math.round(vals.reduce((a, b) => a + b, 0) / vals.length), "average") + stat(Math.min(...vals), "lowest") + stat(Math.max(...vals), "highest") + stat(vals.length, "readings")
+    : '<div style="grid-column:1/-1;color:var(--muted)">No readings in this period</div>';
+
+  // day by day, including days where an expected caregiver did not submit
+  const byDate = {};
+  list.forEach((e) => (byDate[e.date] = byDate[e.date] || []).push(e));
+  const rows = [];
+  for (let d = today; d >= from; d = addDays(d, -1)) {
+    const exp = expectedCaregiver(d);
+    const es = byDate[d] || [];
+    es.forEach((e) => rows.push(dayHtml(e)));
+    if (exp && (!who || sameName(who, exp)) && !es.some((e) => sameName(e.caregiver, exp)) && d < today) {
+      rows.push('<div class="day missing"><div class="day-head"><span>' + esc(fmtDate(d)) + "</span><span>" + esc(exp) + '</span></div><div class="day-meta">No form submitted</div></div>');
+    }
+  }
+  $("dayCount").textContent = list.length + " entr" + (list.length === 1 ? "y" : "ies");
+  $("days").innerHTML = rows.join("") || '<p class="sub">Nothing in this period yet.</p>';
+}
+
+function dayHtml(e) {
+  const daily = TASKS.filter((t) => t.freq === "daily");
+  const done = daily.filter((t) => isDone(t, e.values[t.col]));
+  const missed = daily.filter((t) => !isDone(t, e.values[t.col]));
+  const extra = TASKS.filter((t) => t.freq !== "daily" && e.values[t.col] === "Yes");
+  const pillsNight = TASKS.find((t) => t.type === "yesno");
+  const meta = [done.length + "/" + daily.length + " daily tasks"];
+  if (e.values[BS.col]) meta.push("Blood sugar " + esc(e.values[BS.col]));
+  if (e.values[CFG.moodCol]) meta.push("Day: " + esc(e.values[CFG.moodCol]));
+  if (pillsNight && e.values[pillsNight.col] === "No") meta.push("<b style='color:var(--alert)'>Did NOT take pills last night</b>");
+  return '<div class="day"><div class="day-head"><span>' + esc(fmtDate(e.date)) + "</span><span>" + esc(e.caregiver) + "</span></div>" +
+    '<div class="day-meta">' + meta.join(" · ") + "</div>" +
+    "<div>" + missed.map((t) => '<span class="pill miss">✗ ' + esc(t.col) + "</span>").join("") +
+    extra.map((t) => '<span class="pill extra">✓ ' + esc(t.col) + "</span>").join("") + "</div>" +
+    (e.values[CFG.notesCol] ? '<div class="note">' + esc(e.values[CFG.notesCol]) + "</div>" : "") + "</div>";
+}
+start();
+</script>
+</body>
+</html>
